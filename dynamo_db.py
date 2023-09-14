@@ -25,13 +25,15 @@ refreshSecurityToken()
 
 
 
-def dynamo(cmp_id:str,date:str) -> List[Dict[str, any]]:
+def dynamo(cmp_id:str,Start_date:str,end_date:str) -> List[Dict[str, any]]:
     retArr = []
     dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
     table = dynamodb.Table('BeeswaxCampaignSpendByDeviceTypeAggregates-prod')
     newJson = {}
-    for i in range(0, 24):
-        # zero-pad the hour to ensure it's always two digits
+    date = Start_date.split(" ")[0].replace("-","")
+    t1 =  int(Start_date.split(" ")[1].split(":")[0])
+    t2 = int(end_date.split(" ")[1].split(":")[0])
+    for i in range(t1, t2):
         hour_str = str(i).zfill(2)
         response = table.query(
             KeyConditionExpression=boto3.dynamodb.conditions.Key('CampaignId_TimeBucket').eq(
@@ -42,7 +44,7 @@ def dynamo(cmp_id:str,date:str) -> List[Dict[str, any]]:
             newJson[f'{data["CampaignId_TimeBucket"]}_{data["DeviceType"]}'] =  int(data["TotalSpendMicros"])
     return newJson
 
-def run_query_and_collect_results(start_date:str,end_date:str,camp_id:int) -> list:
+def run_query_and_collect_results(start_date:str,end_date:str,camp_id:int) -> dict:
     database_url = "postgresql://{0}:{1}@{2}:{3}/{4}".format(user, pwd, host, port, db)
     engine = create_engine(database_url)
     query = text(f"""
@@ -51,8 +53,10 @@ def run_query_and_collect_results(start_date:str,end_date:str,camp_id:int) -> li
                c.line_item_id AS camp_id,
                (SUM(c.win_cost_micros_usd)) AS hourly_spend
         FROM win_logs c
-        WHERE c.time >= '{start_date}'
-              AND c.time < '{end_date}'
+        WHERE c.time >= '{start_date}'::timestamp - interval '1' hour
+              AND c.time < '{end_date}'::timestamp + interval '1' hour
+              AND c.imp_rx_time_utc >= '{start_date}'
+              AND c.imp_rx_time_utc < '{end_date}'
               AND c.line_item_id = {camp_id}
         GROUP BY 1, 2, 3
         ORDER BY 1, 2, 3
@@ -69,8 +73,7 @@ def run_query_and_collect_results(start_date:str,end_date:str,camp_id:int) -> li
 def runner(startDate:str,endDate:str,cmpId:int):
     print(f'test results for the {cmpId} for the dates {startDate} to {endDate}')
     queryResults = run_query_and_collect_results(startDate,endDate,cmpId)
-    sd = startDate.split(" ")[0].replace("-","")
-    dynamoDbResults = dynamo(cmpId,sd)
+    dynamoDbResults = dynamo(cmpId,startDate,endDate)
     dynamoMissing = set(queryResults.keys()) -set(dynamoDbResults.keys())
     dbMissing = set(dynamoDbResults.keys()) - set(queryResults.keys())
     common_keys = set(queryResults.keys()).intersection(dynamoDbResults.keys())
@@ -84,4 +87,4 @@ def runner(startDate:str,endDate:str,cmpId:int):
     print(f'total number of record with difference in spending are  {len(different_values)}')
     for key,values in different_values.items():
         print(f'for the campTime {key} the value is different in db and dynamo as {values}')
-print(runner("2023-09-13 00:00:00","2023-09-14 23:00:00",32503))
+print(runner("2023-09-13 00:00:00","2023-09-13 22:00:00",32503))
